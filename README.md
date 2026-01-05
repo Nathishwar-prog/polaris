@@ -1,6 +1,8 @@
 # Polaris - Build a Cursor AI Alternative
 
-A comprehensive YouTube tutorial series building a **fully-featured cloud IDE** from scratch.
+This is the repository for a comprehensive [YouTube tutorial series](https://youtu.be/Xf9rHPNBMyQ) where we build a **fully-featured cloud IDE** from scratch.
+
+[![Watch the Tutorial](https://img.shields.io/badge/YouTube-Watch%20Tutorial-red?style=for-the-badge&logo=youtube)](https://youtu.be/Xf9rHPNBMyQ)
 
 > **Note:** This is **Part 1 of 2** of the tutorial series. The codebase is functional but incomplete - Part 2 will add the AI Agent, WebContainer preview, and GitHub integration.
 
@@ -246,6 +248,10 @@ A huge thank you to the sponsors who made this tutorial possible. Consider check
 ### Error Tracking
 
 **[Sentry](https://cwa.run/sentry)** - See what's broken and fix it fast.
+
+### Code Review
+
+**[CodeRabbit](https://cwa.run/coderabbit)** - AI-powered code reviews that catch bugs before your users do.
 
 ## Acknowledgments
 
