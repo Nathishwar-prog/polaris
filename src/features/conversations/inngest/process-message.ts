@@ -1,23 +1,22 @@
-import { createAgent, anthropic, createNetwork } from '@inngest/agent-kit';
+import { generateText } from 'ai';
+import { createOpenAI } from '@ai-sdk/openai';
+
+// Create a custom OpenAI instance pointing to the local Ollama provider
+const ollama = createOpenAI({
+  baseURL: 'http://localhost:11434/v1',
+  apiKey: 'ollama', // Required by the SDK but ignored by Ollama
+});
 
 import { inngest } from "@/inngest/client";
 import { Id } from "../../../../convex/_generated/dataModel";
 import { NonRetriableError } from "inngest";
 import { convex } from "@/lib/convex-client";
 import { api } from "../../../../convex/_generated/api";
-import { 
-  CODING_AGENT_SYSTEM_PROMPT, 
+import {
+  CODING_AGENT_SYSTEM_PROMPT,
   TITLE_GENERATOR_SYSTEM_PROMPT
 } from "./constants";
 import { DEFAULT_CONVERSATION_TITLE } from "../constants";
-import { createReadFilesTool } from './tools/read-files';
-import { createListFilesTool } from './tools/list-files';
-import { createUpdateFileTool } from './tools/update-file';
-import { createCreateFilesTool } from './tools/create-files';
-import { createCreateFolderTool } from './tools/create-folder';
-import { createRenameFileTool } from './tools/rename-file';
-import { createDeleteFilesTool } from './tools/delete-files';
-import { createScrapeUrlsTool } from './tools/scrape-urls';
 
 interface MessageEvent {
   messageId: Id<"messages">;
@@ -56,14 +55,14 @@ export const processMessage = inngest.createFunction(
     event: "message/sent",
   },
   async ({ event, step }) => {
-    const { 
-      messageId, 
+    const {
+      messageId,
       conversationId,
       projectId,
       message
     } = event.data as MessageEvent;
 
-    const internalKey = process.env.POLARIS_CONVEX_INTERNAL_KEY; 
+    const internalKey = process.env.POLARIS_CONVEX_INTERNAL_KEY;
 
     if (!internalKey) {
       throw new NonRetriableError("POLARIS_CONVEX_INTERNAL_KEY is not configured");
@@ -114,111 +113,118 @@ export const processMessage = inngest.createFunction(
       conversation.title === DEFAULT_CONVERSATION_TITLE;
 
     if (shouldGenerateTitle) {
-       const titleAgent = createAgent({
-        name: "title-generator",
-        system: TITLE_GENERATOR_SYSTEM_PROMPT,
-        model: anthropic({
-          model: "claude-3-5-haiku-20241022",
-          defaultParameters: { temperature: 0, max_tokens: 50 },
-        }),
-       });
+      await step.run("generate-title", async () => {
+        const { text: title } = await generateText({
+          model: ollama('deepseek-coder:6.7b'),
+          system: TITLE_GENERATOR_SYSTEM_PROMPT,
+          prompt: message,
+        });
 
-       const { output } = await titleAgent.run(message, { step });
-
-       const textMessage = output.find(
-        (m) => m.type === "text" && m.role === "assistant"
-      );
-
-      if (textMessage?.type === "text") {
-         const title = 
-          typeof textMessage.content === "string"
-            ? textMessage.content.trim()
-            : textMessage.content
-              .map((c) => c.text)
-              .join("")
-              .trim();
-
-        if (title) {
-          await step.run("update-conversation-title", async () => {
-            await convex.mutation(api.system.updateConversationTitle, {
-              internalKey,
-              conversationId,
-              title,
-            });
+        if (title && title.trim().length > 0) {
+          await convex.mutation(api.system.updateConversationTitle, {
+            internalKey,
+            conversationId,
+            title: title.trim(),
           });
         }
-      }
+      });
     }
 
-    // Create the coding agent with file tools
-    const codingAgent = createAgent({
-      name: "polaris",
-      description: "An expert AI coding assistant",
-      system: systemPrompt,
-       model: anthropic({
-        model: "claude-opus-4-20250514",
-        defaultParameters: { temperature: 0.3, max_tokens: 16000 }
-       }),
-       tools: [
-        createListFilesTool({ internalKey, projectId }),
-        createReadFilesTool({ internalKey }),
-        createUpdateFileTool({ internalKey }),
-        createCreateFilesTool({ projectId, internalKey }),
-        createCreateFolderTool({ projectId, internalKey }),
-        createRenameFileTool({ internalKey }),
-        createDeleteFilesTool({ internalKey }),
-        createScrapeUrlsTool(),
-       ],
+    // Run the main coding agent
+    const assistantResponse = await step.run("generate-response", async () => {
+      const { text } = await generateText({
+        model: ollama('deepseek-coder:6.7b'),
+        system: systemPrompt,
+        prompt: message,
+        tools: undefined, // Explicitly disable tools for deepseek-coder
+      });
+      return text;
     });
 
-    // Create network with single agent
-    const network = createNetwork({
-      name: "polaris-network",
-      agents: [codingAgent],
-      maxIter: 20,
-      router: ({ network }) => {
-        const lastResult = network.state.results.at(-1);
-        const hasTextResponse = lastResult?.output.some(
-          (m) => m.type === "text" && m.role === "assistant"
-        );
-        const hasToolCalls = lastResult?.output.some(
-          (m) => m.type === "tool_call"
-        );
+    // Parse and execute actions from the text response
+    await step.run("execute-text-actions", async () => {
+      const createFileRegex = /<create_file\s+path="([^"]+)">([\s\S]*?)<\/create_file>/g;
+      const updateFileRegex = /<update_file\s+id="([^"]+)">([\s\S]*?)<\/update_file>/g;
 
-        // Anthropic outputs text AND tool calls together
-        // Only stop if there's text WITHOUT tool calls (final response)
-        if (hasTextResponse && !hasToolCalls) {
-          return undefined;
+      const createMatches = [...assistantResponse.matchAll(createFileRegex)];
+      const updateMatches = [...assistantResponse.matchAll(updateFileRegex)];
+
+      // Helper to resolve folder path to ID, creating if needed
+      const resolvePath = async (path: string): Promise<Id<"files"> | undefined> => {
+        const parts = path.split("/");
+        const fileName = parts.pop(); // Remove file name
+        if (parts.length === 0) return undefined; // Root
+
+        let currentParentId: Id<"files"> | undefined = undefined;
+
+        for (const part of parts) {
+          // Check if folder exists in current parent
+          const existing = await convex.query(api.system.getFolderByName, {
+            internalKey,
+            projectId,
+            parentId: currentParentId,
+            name: part
+          });
+
+          if (existing) {
+            currentParentId = existing._id;
+          } else {
+            // Create folder
+            currentParentId = await convex.mutation(api.system.createFolder, {
+              internalKey,
+              projectId,
+              parentId: currentParentId,
+              name: part
+            });
+          }
         }
-        return codingAgent;
+        return currentParentId;
+      };
+
+      // Execute Creates
+      for (const match of createMatches) {
+        const path = match[1];
+        const content = match[2];
+
+        try {
+          const parentId = await resolvePath(path);
+          const name = path.split("/").pop()!;
+
+          await convex.mutation(api.system.createFile, {
+            internalKey,
+            projectId,
+            parentId,
+            name,
+            content
+          });
+        } catch (e) {
+          console.error(`Failed to create file ${path}:`, e);
+        }
+      }
+
+      // Execute Updates
+      for (const match of updateMatches) {
+        const fileId = match[1] as Id<"files">;
+        const content = match[2];
+
+        try {
+          await convex.mutation(api.system.updateFile, {
+            internalKey,
+            fileId,
+            content
+          });
+        } catch (e) {
+          console.error(`Failed to update file ${fileId}:`, e);
+        }
       }
     });
-
-    // Run the agent
-    const result = await network.run(message);
-
-    // Extract the assistant's text response from the last agent result
-    const lastResult = result.state.results.at(-1);
-    const textMessage = lastResult?.output.find(
-      (m) => m.type === "text" && m.role === "assistant"
-    );
-
-    let assistantResponse =
-      "I processed your request. Let me know if you need anything else!";
-
-    if (textMessage?.type === "text") {
-      assistantResponse =
-        typeof textMessage.content === "string"
-          ? textMessage.content
-          : textMessage.content.map((c) => c.text).join("");
-    }
 
     // Update the assistant message with the response (this also sets status to completed)
     await step.run("update-assistant-message", async () => {
       await convex.mutation(api.system.updateMessageContent, {
         internalKey,
         messageId,
-        content: assistantResponse,
+        content: assistantResponse || "I processed your request.",
       })
     });
 

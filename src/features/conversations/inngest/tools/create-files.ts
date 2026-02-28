@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { createTool } from "@inngest/agent-kit";
+import { tool } from "ai";
 
 import { convex } from "@/lib/convex-client";
 
@@ -27,8 +27,7 @@ export const createCreateFilesTool = ({
   projectId,
   internalKey,
 }: CreateFilesToolOptions) => {
-  return createTool({
-    name: "createFiles",
+  return tool({
     description:
       "Create multiple files at once in the same folder. Use this to batch create files that share the same parent folder. More efficient than creating files one by one.",
     parameters: z.object({
@@ -46,7 +45,7 @@ export const createCreateFilesTool = ({
         )
         .describe("Array of files to create"),
     }),
-    handler: async (params, { step: toolStep }) => {
+    execute: async (params: { parentId: string; files: { name: string; content: string }[] }) => {
       const parsed = paramsSchema.safeParse(params);
       if (!parsed.success) {
         return `Error: ${parsed.error.issues[0].message}`;
@@ -55,47 +54,45 @@ export const createCreateFilesTool = ({
       const { parentId, files } = parsed.data;
 
       try {
-        return await toolStep?.run("create-files", async () => {
-          let resolvedParentId: Id<"files"> | undefined;
+        let resolvedParentId: Id<"files"> | undefined;
 
-          if (parentId && parentId !== "") {
-            try {
-              resolvedParentId = parentId as Id<"files">;
-              const parentFolder = await convex.query(api.system.getFileById, {
-                internalKey,
-                fileId: resolvedParentId,
-              });
-              if (!parentFolder) {
-                return `Error: Parent folder with ID "${parentId}" not found. Use listFiles to get valid folder IDs.`;
-              }
-              if (parentFolder.type !== "folder") {
-                return `Error: The ID "${parentId}" is a file, not a folder. Use a folder ID as parentId.`;
-              }
-            } catch {
-              return `Error: Invalid parentId "${parentId}". Use listFiles to get valid folder IDs, or use empty string for root level.`;
+        if (parentId && parentId !== "") {
+          try {
+            resolvedParentId = parentId as Id<"files">;
+            const parentFolder = await convex.query(api.system.getFileById, {
+              internalKey,
+              fileId: resolvedParentId,
+            });
+            if (!parentFolder) {
+              return `Error: Parent folder with ID "${parentId}" not found. Use listFiles to get valid folder IDs.`;
             }
+            if (parentFolder.type !== "folder") {
+              return `Error: The ID "${parentId}" is a file, not a folder. Use a folder ID as parentId.`;
+            }
+          } catch {
+            return `Error: Invalid parentId "${parentId}". Use listFiles to get valid folder IDs, or use empty string for root level.`;
           }
+        }
 
-          const results = await convex.mutation(api.system.createFiles, {
-            internalKey,
-            projectId,
-            parentId: resolvedParentId,
-            files,
-          });
-
-          const created = results.filter((r) => !r.error);
-          const failed = results.filter((r) => r.error);
-
-          let response = `Created ${created.length} file(s)`;
-          if (created.length > 0) {
-            response += `: ${created.map((r) => r.name).join(", ")}`;
-          }
-          if (failed.length > 0) {
-            response += `. Failed: ${failed.map((r) => `${r.name} (${r.error})`).join(", ")}`;
-          }
-
-          return response;
+        const results = await convex.mutation(api.system.createFiles, {
+          internalKey,
+          projectId,
+          parentId: resolvedParentId,
+          files,
         });
+
+        const created = results.filter((r) => !r.error);
+        const failed = results.filter((r) => r.error);
+
+        let response = `Created ${created.length} file(s)`;
+        if (created.length > 0) {
+          response += `: ${created.map((r) => r.name).join(", ")}`;
+        }
+        if (failed.length > 0) {
+          response += `. Failed: ${failed.map((r) => `${r.name} (${r.error})`).join(", ")}`;
+        }
+
+        return response;
       } catch (error) {
         return `Error creating files: ${error instanceof Error ? error.message : "Unknown error"}`;
       }

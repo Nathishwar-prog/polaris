@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { createTool } from "@inngest/agent-kit";
+import { tool } from "ai";
 
 import { convex } from "@/lib/convex-client";
 
@@ -19,8 +19,7 @@ const paramsSchema = z.object({
 export const createDeleteFilesTool = ({
   internalKey,
 }: DeleteFilesToolOptions) => {
-  return createTool({
-    name: "deleteFiles",
+  return tool({
     description:
       "Delete files or folders from the project. If deleting a folder, all contents will be deleted recursively.",
     parameters: z.object({
@@ -28,7 +27,7 @@ export const createDeleteFilesTool = ({
         .array(z.string())
         .describe("Array of file or folder IDs to delete"),
     }),
-    handler: async (params, { step: toolStep }) => {
+    execute: async (params: { fileIds: string[] }) => {
       const parsed = paramsSchema.safeParse(params);
       if (!parsed.success) {
         return `Error: ${parsed.error.issues[0].message}`;
@@ -37,9 +36,9 @@ export const createDeleteFilesTool = ({
       const { fileIds } = parsed.data;
 
       // Validate all files exist before running the step
-      const filesToDelete: { 
-        id: string; 
-        name: string; 
+      const filesToDelete: {
+        id: string;
+        name: string;
         type: string
       }[] = [];
 
@@ -61,20 +60,18 @@ export const createDeleteFilesTool = ({
       }
 
       try {
-        return await toolStep?.run("delete-files", async () => {
-          const results: string[] = [];
+        const results: string[] = [];
 
-          for (const file of filesToDelete) {
-            await convex.mutation(api.system.deleteFile, {
-              internalKey,
-              fileId: file.id as Id<"files">,
-            });
+        for (const file of filesToDelete) {
+          await convex.mutation(api.system.deleteFile, {
+            internalKey,
+            fileId: file.id as Id<"files">,
+          });
 
-            results.push(`Deleted ${file.type} "${file.name}" successfully`);
-          }
+          results.push(`Deleted ${file.type} "${file.name}" successfully`);
+        }
 
-          return results.join("\n");
-        });
+        return results.join("\n");
       } catch (error) {
         return `Error deleting files: ${error instanceof Error ? error.message : "Unknown error"}`;
       }

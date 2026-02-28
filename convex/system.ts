@@ -145,14 +145,14 @@ export const updateConversationTitle = mutation({
     conversationId: v.id("conversations"),
     title: v.string(),
   },
-   handler: async (ctx, args) => {
+  handler: async (ctx, args) => {
     validateInternalKey(args.internalKey);
 
     await ctx.db.patch(args.conversationId, {
       title: args.title,
       updatedAt: Date.now(),
     });
-   },
+  },
 });
 
 // Used for Agent "ListFiles" tool
@@ -342,6 +342,29 @@ export const createFolder = mutation({
   },
 });
 
+export const getFolderByName = query({
+  args: {
+    internalKey: v.string(),
+    projectId: v.id("projects"),
+    parentId: v.optional(v.id("files")),
+    name: v.string(),
+  },
+  handler: async (ctx, args) => {
+    validateInternalKey(args.internalKey);
+
+    const files = await ctx.db
+      .query("files")
+      .withIndex("by_project_parent", (q) =>
+        q.eq("projectId", args.projectId).eq("parentId", args.parentId)
+      )
+      .collect();
+
+    return files.find(
+      (file) => file.name === args.name && file.type === "folder"
+    );
+  },
+});
+
 // Used for Agent "RenameFile" tool
 export const renameFile = mutation({
   args: {
@@ -394,7 +417,7 @@ export const deleteFile = mutation({
   handler: async (ctx, args) => {
     validateInternalKey(args.internalKey);
 
-     const file = await ctx.db.get(args.fileId);
+    const file = await ctx.db.get(args.fileId);
     if (!file) {
       throw new Error("File not found");
     }
@@ -506,7 +529,7 @@ export const createBinaryFile = mutation({
       parentId: args.parentId,
       updatedAt: Date.now(),
     });
-    
+
     return fileId;
   },
 });

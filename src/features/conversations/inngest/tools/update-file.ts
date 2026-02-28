@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { createTool } from "@inngest/agent-kit";
+import { tool } from "ai";
 
 import { convex } from "@/lib/convex-client";
 
@@ -18,14 +18,13 @@ const paramsSchema = z.object({
 export const createUpdateFileTool = ({
   internalKey,
 }: UpdateFileToolOptions) => {
-  return createTool({
-    name: "updateFile",
+  return tool({
     description: "Update the content of an existing file",
     parameters: z.object({
       fileId: z.string().describe("The ID of the file to update"),
       content: z.string().describe("The new content for the file"),
     }),
-    handler: async (params, { step: toolStep }) => {
+    execute: async (params: { fileId: string; content: string }) => {
       const parsed = paramsSchema.safeParse(params);
       if (!parsed.success) {
         return `Error: ${parsed.error.issues[0].message}`;
@@ -49,15 +48,13 @@ export const createUpdateFileTool = ({
       }
 
       try {
-        return await toolStep?.run("update-file", async () => {
-          await convex.mutation(api.system.updateFile, {
-            internalKey,
-            fileId: fileId as Id<"files">,
-            content,
-          });
+        await convex.mutation(api.system.updateFile, {
+          internalKey,
+          fileId: fileId as Id<"files">,
+          content,
+        });
 
-          return `File "${file.name}" updated successfully`;
-        })
+        return `File "${file.name}" updated successfully`;
       } catch (error) {
         return `Error update file: ${error instanceof Error ? error.message : "Unknown error"}`;
       }

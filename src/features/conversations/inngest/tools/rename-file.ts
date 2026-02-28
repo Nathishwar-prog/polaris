@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { createTool } from "@inngest/agent-kit";
+import { tool } from "ai";
 
 import { convex } from "@/lib/convex-client";
 
@@ -18,14 +18,13 @@ const paramsSchema = z.object({
 export const createRenameFileTool = ({
   internalKey,
 }: RenameFileToolOptions) => {
-  return createTool({
-    name: "renameFile",
+  return tool({
     description: "Rename a file or folder",
     parameters: z.object({
       fileId: z.string().describe("The ID of the file or folder to rename"),
       newName: z.string().describe("The new name for the file or folder"),
     }),
-    handler: async (params, { step: toolStep }) => {
+    execute: async (params: { fileId: string; newName: string }) => {
       const parsed = paramsSchema.safeParse(params);
       if (!parsed.success) {
         return `Error: ${parsed.error.issues[0].message}`;
@@ -44,15 +43,13 @@ export const createRenameFileTool = ({
       }
 
       try {
-        return await toolStep?.run("rename-file", async () => {
-          await convex.mutation(api.system.renameFile, {
-            internalKey,
-            fileId: fileId as Id<"files">,
-            newName,
-          });
+        await convex.mutation(api.system.renameFile, {
+          internalKey,
+          fileId: fileId as Id<"files">,
+          newName,
+        });
 
-          return `Renamed "${file.name}" to "${newName}" successfully`;        
-        })
+        return `Renamed "${file.name}" to "${newName}" successfully`;
       } catch (error) {
         return `Error renaming file: ${error instanceof Error ? error.message : "Unknown error"}`;
       }
